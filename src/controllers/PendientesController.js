@@ -18,24 +18,19 @@ exports.registrarPago = async (req, res) => {
   try {
     const { pagoId } = req.params;
     const pagoData = req.body;
-
+    
     if (!pagoData.montoPagado || pagoData.montoPagado <= 0) {
-      return res
-        .status(400)
-        .json({ message: "Monto pagado debe ser mayor a 0" });
+      return res.status(400).json({ message: "Monto pagado debe ser mayor a 0" });
     }
-
-    if (
-      !pagoData.formaPago ||
-      !["efectivo", "qr", "mixto"].includes(pagoData.formaPago)
-    ) {
+    
+    if (!pagoData.formaPago || !['efectivo', 'qr', 'mixto'].includes(pagoData.formaPago)) {
       return res.status(400).json({ message: "Forma de pago inválida" });
     }
-
+    
     if (!pagoData.cajaId || !pagoData.empleadoId || !pagoData.sucursalId) {
       return res.status(400).json({ message: "Datos de usuario incompletos" });
     }
-
+    
     const result = await PendientesService.registrarPago(pagoId, pagoData);
     res.json(result);
   } catch (error) {
@@ -48,7 +43,7 @@ exports.registrarPago = async (req, res) => {
 exports.cancelarPagoPendiente = async (req, res) => {
   try {
     const { pagoId } = req.params;
-
+    
     const result = await PendientesService.cancelarPagoPendiente(pagoId);
     res.json(result);
   } catch (error) {
