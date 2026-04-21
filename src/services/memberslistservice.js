@@ -201,71 +201,95 @@ const getMembers = async (
 
     queryParams.push(itemsPerPage, offset);
 
-    console.log("Ejecutando consulta members:", membersQuery);
-    console.log("Parámetros:", queryParams);
-
     const membersResult = await query(membersQuery, queryParams);
     const countResult = await query(countQuery, queryParams.slice(0, -2));
 
     const totalCount = parseInt(countResult.rows[0]?.total_count || 0);
-    console.log("Total de miembros encontrados:", totalCount);
-
-    // Ahora obtener los servicios para cada miembro
-    const membersWithServices = [];
     
-    for (const member of membersResult.rows) {
-      const servicesQuery = `
-        WITH UltimasInscripciones AS (
-          SELECT 
-            i.persona_id,
-            i.servicio_id,
-            i.sucursal_id,
-            MAX(i.fecha_inicio) as ultima_fecha
-          FROM inscripciones i
-          INNER JOIN servicios s ON i.servicio_id = s.id AND s.estado = 1
-          WHERE i.persona_id = $1 AND i.sucursal_id = $2
-          GROUP BY i.persona_id, i.servicio_id, i.sucursal_id
-        )
+    const membersServiceQuery = `
+      WITH UltimasInscripciones AS (
         SELECT 
-          s.nombre as servicio_nombre,
-          i.ingresos_disponibles,
-          TO_CHAR(i.fecha_vencimiento, 'YYYY-MM-DD') as fecha_vencimiento,
-          CASE 
-            WHEN i.fecha_vencimiento >= TIMEZONE('America/La_Paz', NOW())::date 
-                 AND (i.ingresos_disponibles > 0 OR i.ingresos_disponibles IS NULL) 
-                 THEN 'active'
-            ELSE 'inactive'
-          END as servicio_status
-        FROM UltimasInscripciones ui
-        INNER JOIN inscripciones i ON ui.persona_id = i.persona_id 
-          AND ui.servicio_id = i.servicio_id 
-          AND ui.sucursal_id = i.sucursal_id 
-          AND ui.ultima_fecha = i.fecha_inicio
+          i.persona_id,
+          i.servicio_id,
+          i.sucursal_id,
+          MAX(i.fecha_inicio) as ultima_fecha
+        FROM inscripciones i
         INNER JOIN servicios s ON i.servicio_id = s.id AND s.estado = 1
-        ORDER BY s.nombre
-      `;
+        WHERE i.persona_id = ANY($1::int[]) 
+          AND i.sucursal_id = ANY($2::int[])
+        GROUP BY i.persona_id, i.servicio_id, i.sucursal_id
+      )
+      SELECT 
+        p.id as persona_id,
+        CONCAT(p.nombres, ' ', p.apellidos) as name,
+        p.ci,
+        p.telefono as phone,
+        ui.sucursal_id,
+        s.nombre as servicio_nombre,
+        i.ingresos_disponibles,
+        TO_CHAR(i.fecha_vencimiento, 'YYYY-MM-DD') as fecha_vencimiento,
+        TO_CHAR(i.fecha_inicio, 'YYYY-MM-DD') as fecha_inicio,
+        CASE 
+          WHEN i.fecha_vencimiento >= TIMEZONE('America/La_Paz', NOW())::date 
+              AND (i.ingresos_disponibles > 0 OR i.ingresos_disponibles IS NULL) 
+              THEN 'active'
+          ELSE 'inactive'
+        END as servicio_status
+      FROM personas p
+      LEFT JOIN UltimasInscripciones ui ON p.id = ui.persona_id
+      LEFT JOIN inscripciones i ON ui.persona_id = i.persona_id 
+        AND ui.servicio_id = i.servicio_id 
+        AND ui.sucursal_id = i.sucursal_id 
+        AND ui.ultima_fecha = i.fecha_inicio
+      LEFT JOIN servicios s ON i.servicio_id = s.id AND s.estado = 1
+      WHERE p.id = ANY($1::int[])
+      ORDER BY p.id, s.nombre
+    `;
+
+    const memberIds = membersResult.rows.map(m => m.id);
+    
+    const sucursalIds = [...new Set(membersResult.rows.map(m => m.sucursal_id).filter(Boolean))];
+
+    const allData = await query(membersServiceQuery, [memberIds, sucursalIds]);
+
+    const membersMap = new Map();
+
+    for (const row of allData.rows) {
+      const memberId = row.persona_id.toString();
       
-      const servicesResult = await query(servicesQuery, [member.id, member.sucursal_id]);
+      if (!membersMap.has(memberId)) {
+        
+        membersMap.set(memberId, {
+          id: memberId,
+          name: row.name || "",
+          ci: row.ci || "",
+          phone: row.phone || "",
+          birthDate: row.birthdate || "",
+          sucursal: row.sucursal_id ? row.sucursal_id.toString() : "",
+          status: 'inactive',
+          services: []
+        });
+      }
       
-      const memberData = {
-        id: member.id.toString(),
-        name: member.name || "",
-        ci: member.ci || "",
-        phone: member.phone || "",
-        birthDate: member.birthdate || "",
-        sucursal: member.sucursal_id ? member.sucursal_id.toString() : "",
-        status: member.member_status || "inactive",
-        registrationDate: member.registrationdate || "",
-        services: servicesResult.rows.map(service => ({
-          name: service.servicio_nombre,
-          expirationDate: service.fecha_vencimiento,
-          status: service.servicio_status,
-          ingresos_disponibles: service.ingresos_disponibles,
-        })),
-      };
-      
-      membersWithServices.push(memberData);
+      if (row.servicio_nombre) {
+        const memberData = membersMap.get(memberId);
+        const serviceStatus = row.servicio_status;
+        
+        memberData.services.push({
+          name: row.servicio_nombre,
+          expirationDate: row.fecha_vencimiento,
+          status: serviceStatus,
+          ingresos_disponibles: row.ingresos_disponibles,
+          fecha_inicio: row.fecha_inicio
+        });
+        
+        if (serviceStatus === 'active' && memberData.status !== 'active') {
+          memberData.status = 'active';
+        }
+      }
     }
+
+    const membersWithServices = Array.from(membersMap.values());
 
     return {
       members: membersWithServices,
